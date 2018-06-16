@@ -914,7 +914,7 @@ prepare_metafiles() {
 	[ ! -d "$dir" ] && die "Missing $dir"
 	cd "$dir"
 	mkdir -p "$controldir"
-	local builddate=$(date -u "+%s")
+	local builddate=$(date -d @$SOURCE_DATE_EPOCH '+%F %X')
 
 	# Fix package size on several filesystems
 	case "$(df -PT . | awk 'END {print $2}')" in
@@ -935,13 +935,13 @@ prepare_metafiles() {
 	if [ -n "$FAKEROOTKEY" ]; then
 		echo "# using $($FAKEROOT -v)" >> "$pkginfo"
 	fi
-	echo "# $(date -u)" >> "$pkginfo"
+	echo "# $builddate" >> "$pkginfo"
 	cat >> "$pkginfo" <<-EOF
 		pkgname = $name
 		pkgver = $pkgver-r$pkgrel
 		pkgdesc = $pkgdesc
 		url = $url
-		builddate = $builddate
+		builddate = $SOURCE_DATE_EPOCH
 		packager = ${PACKAGER:-"Unknown"}
 		size = $size
 		arch = ${subpkgarch:-$pkgarch}
@@ -1481,7 +1481,8 @@ create_apks() {
 			touch .dummy
 			set -- .dummy
 		fi
-		tar --xattrs -f - -c "$@" | abuild-tar --hash | gzip -9 >"$dir"/data.tar.gz
+		tar --mtime="$(date -d @$SOURCE_DATE_EPOCH '+%F %X')" --no-xattrs \
+			-f - -c "$@" \ | abuild-tar --hash | gzip -9 >"$dir"/data.tar.gz
 
 		msg "Create checksum..."
 		# append the hash for data.tar.gz
@@ -1490,7 +1491,8 @@ create_apks() {
 
 		# control.tar.gz
 		cd "$dir"
-		tar -f - -c $(cat "$dir"/.metafiles) | abuild-tar --cut \
+		tar --mtime="$(date -d @$SOURCE_DATE_EPOCH '+%F %X')" --no-xattrs \
+			-f - -c $(cat "$dir"/.metafiles) | abuild-tar --cut \
 			| gzip -9 > control.tar.gz
 		abuild-sign -q control.tar.gz || exit 1
 
@@ -2555,6 +2557,21 @@ BUILD_ROOT=
 export CC
 
 cd "$startdir" || die
+
+# get timestamp of last APKBUILD commit for setting SOURCE_DATE_EPOCH
+# this is needed to make building reproducible builds possible
+# if $APKBUILD is not part of a git repository use last modification date
+if [ -z "$SOURCE_DATE_EPOCH" ]; then
+	if git status > /dev/null 2>&1; then
+		SOURCE_DATE_EPOCH=$($git log -1 --format='%ct' "$APKBUILD")
+	else
+		tmp_date=$(stat "$APKBUILD" | grep "Modify" | awk '{print $2 " " $3}' \
+			| cut -c-19)
+		SOURCE_DATE_EPOCH=$(date -d "$tmp_date" +%s)
+	fi
+fi
+export SOURCE_DATE_EPOCH
+
 . "$APKBUILD"
 
 builddir=${builddir:-"$srcdir/$pkgname-$pkgver"}
